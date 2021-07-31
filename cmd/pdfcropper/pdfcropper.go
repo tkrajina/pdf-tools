@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 
@@ -11,39 +12,61 @@ import (
 )
 
 func main() {
-	crop := flag.String("crop", "", "Pages from-to")
+	openWith := flag.String("open-with", "", "Open resulting file with")
+	cropAll := flag.String("c", "", "Crop [t,l,b,t]")
+	cropOddPages := flag.String("o", "", "Crop odd pages [t,l,b,t]")
+	cropEvenPages := flag.String("e", "", "Crop even pages [t,l,b,t]")
 	flag.Parse()
 
 	inFile := flag.Arg(0)
 	outFile := flag.Arg(1)
 
-	var opts PdfOpts
+	var oddPagesOpts, evenPagesOpts PdfOpts
 
-	if len(*crop) > 0 {
-		_, crops, err := parseNumbers(*crop)
-		fmt.Printf("crops=%#v\n", crops)
-		if err != nil {
-			printDefaultsAndExit(err.Error())
-		}
-		if len(crops) == 2 {
-			opts.percentageTop = crops[0]
-			opts.percentageBottom = crops[0]
-			opts.percentageLeft = crops[1]
-			opts.percentageRight = crops[1]
-		} else if len(crops) == 4 {
-			opts.percentageTop = crops[0]
-			opts.percentageRight = crops[1]
-			opts.percentageBottom = crops[2]
-			opts.percentageLeft = crops[3]
-		} else {
-			printDefaultsAndExit("Invalid crop percentages")
-		}
+	if len(*cropAll) > 0 {
+		oddPagesOpts = parseOpts(*cropAll)
+		evenPagesOpts = parseOpts(*cropAll)
+	}
+	if len(*cropOddPages) > 0 {
+		oddPagesOpts = parseOpts(*cropOddPages)
+	}
+	if len(*cropEvenPages) > 0 {
+		evenPagesOpts = parseOpts(*cropEvenPages)
 	}
 
-	fmt.Printf("opts=%#v\n", opts)
-	if err := splitPdf(inFile, outFile, opts); err != nil {
+	if err := splitPdf(inFile, outFile, oddPagesOpts, evenPagesOpts); err != nil {
 		panic(err.Error())
 	}
+
+	if len(*openWith) > 0 {
+		byts, err := exec.Command(*openWith, outFile).CombinedOutput()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%#v:\n", err)
+			panic(string(byts))
+		}
+	}
+}
+
+func parseOpts(optsStr string) PdfOpts {
+	var opts PdfOpts
+	_, crops, err := parseNumbers(optsStr)
+	if err != nil {
+		printDefaultsAndExit(err.Error())
+	}
+	if len(crops) == 2 {
+		opts.percentageTop = crops[0]
+		opts.percentageBottom = crops[0]
+		opts.percentageLeft = crops[1]
+		opts.percentageRight = crops[1]
+	} else if len(crops) == 4 {
+		opts.percentageTop = crops[0]
+		opts.percentageRight = crops[1]
+		opts.percentageBottom = crops[2]
+		opts.percentageLeft = crops[3]
+	} else {
+		printDefaultsAndExit("Invalid crop percentages")
+	}
+	return opts
 }
 
 func parseNumbers(str string) ([]int, []float64, error) {
@@ -58,15 +81,9 @@ func parseNumbers(str string) ([]int, []float64, error) {
 	resInts := make([]int, len(parts))
 	resFloats := make([]float64, len(parts))
 	for n := range parts {
-		i, err := strconv.ParseInt(parts[n], 10, 32)
-		if err != nil {
-			return nil, nil, fmt.Errorf("Cannot parse number '%s' in '%s'", parts[n], str)
-		}
+		i, _ := strconv.ParseInt(parts[n], 10, 32)
 		resInts[n] = int(i)
-		f, err := strconv.ParseFloat(parts[n], 64)
-		if err != nil {
-			return nil, nil, fmt.Errorf("Cannot parse number '%s' in '%s'", parts[n], str)
-		}
+		f, _ := strconv.ParseFloat(parts[n], 64)
 		resFloats[n] = f
 	}
 	return resInts, resFloats, nil
@@ -89,7 +106,7 @@ type PdfOpts struct {
 	percentageLeft, percentageRight float64
 }
 
-func splitPdf(inputPath string, outputPath string, opts PdfOpts) error {
+func splitPdf(inputPath string, outputPath string, oddPages, evenPages PdfOpts) error {
 	pdfWriter := unipdf.NewPdfWriter()
 
 	f, err := os.Open(inputPath)
@@ -133,11 +150,14 @@ func splitPdf(inputPath string, outputPath string, opts PdfOpts) error {
 			return err
 		}
 
+		var opts = oddPages
+		if pageNum%2 == 0 {
+			opts = evenPages
+		}
+
 		// Zoom in on the page middle, with a scaled width and height.
 		width := (*bbox).Urx - (*bbox).Llx
 		height := (*bbox).Ury - (*bbox).Lly
-		_ = width
-		_ = height
 		(*bbox).Llx += width * (float64(opts.percentageLeft) / 100.)
 		(*bbox).Lly += height * (float64(opts.percentageBottom) / 100.)
 		(*bbox).Urx -= width * (float64(opts.percentageRight) / 100.)
